@@ -28,6 +28,7 @@ jobs:
             mingw-w64-ucrt-x86_64-ninja
             mingw-w64-ucrt-x86_64-zlib
             xz
+            diffutils
       - name: Exercise CMake dist with native Windows Git
         shell: msys2 {0}
         run: |
@@ -38,6 +39,7 @@ jobs:
           git --version
           cmake --version
           xz --version
+          command -v cmp
           test "$(git rev-parse HEAD)" = e32dcbf62eb37040fe8a432e83ee68ec0710194b
 
           build_dist() {
