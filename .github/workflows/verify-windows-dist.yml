@@ -1,0 +1,80 @@
+name: Verify Windows dist archive reproducibility
+
+on:
+  push:
+    branches: [codex/verify-libzip-windows-dist]
+
+permissions:
+  contents: read
+
+jobs:
+  windows-dist:
+    if: github.repository == 'ievav100/libzip'
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: e32dcbf62eb37040fe8a432e83ee68ec0710194b
+          fetch-depth: 2
+          persist-credentials: false
+      - uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-cmake
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-zlib
+            xz
+      - name: Exercise CMake dist with native Windows Git
+        shell: msys2 {0}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          export PATH="/c/Program Files/Git/cmd:$PATH"
+          export XZ_DEFAULTS=--threads=2
+          git --version
+          cmake --version
+          xz --version
+          test "$(git rev-parse HEAD)" = e32dcbf62eb37040fe8a432e83ee68ec0710194b
+
+          build_dist() {
+            local dir=$1 eol=$2 autocrlf=false
+            if [[ "$eol" == crlf ]]; then autocrlf=true; fi
+            git config --local core.eol "$eol"
+            git config --local core.autocrlf "$autocrlf"
+            cmake -G Ninja -S . -B "$dir" \
+              -DBUILD_TOOLS=OFF -DBUILD_REGRESS=OFF -DBUILD_DOC=OFF \
+              -DBUILD_EXAMPLES=OFF -DBUILD_OSSFUZZ=OFF \
+              -DENABLE_LZMA=OFF -DENABLE_BZIP2=OFF -DENABLE_ZSTD=OFF
+            cmake --build "$dir" --target dist
+            test "$(git config --local core.eol)" = "$eol"
+            test "$(git config --local core.autocrlf)" = "$autocrlf"
+          }
+
+          patched=$(mktemp)
+          cp cmake/Dist.cmake "$patched"
+          trap 'cp "$patched" cmake/Dist.cmake; rm -f "$patched"' EXIT
+          git show 4be26b88bb750e5dba933a0e2a6ce35e5c083a69:cmake/Dist.cmake > cmake/Dist.cmake
+          build_dist baseline-lf lf
+          build_dist baseline-crlf crlf
+          cp "$patched" cmake/Dist.cmake
+          build_dist patched-lf lf
+          build_dist patched-crlf crlf
+
+          for extension in tar.gz tar.xz; do
+            baseline=(baseline-lf/*."$extension")
+            result=(patched-lf/*."$extension")
+            test "${#baseline[@]}" -eq 1
+            test "${#result[@]}" -eq 1
+            if cmp -s "${baseline[0]}" "baseline-crlf/${baseline[0]##*/}"; then
+              printf 'Baseline archives unexpectedly match for %s\n' "$extension"
+              exit 1
+            fi
+            cmp "${result[0]}" "patched-crlf/${result[0]##*/}"
+            cmp "${baseline[0]}" "${result[0]}"
+            printf 'Patched LF and CRLF archives match for %s\n' "$extension"
+            sha256sum "${result[0]}"
+          done
